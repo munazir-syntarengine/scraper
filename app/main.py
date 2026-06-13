@@ -11,6 +11,7 @@ whole demo runs as one `uvicorn` command.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -19,13 +20,30 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app import config
 from app.crawl import crawl
 from app.render import RenderError
+
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(
     title="Brand Website Scraper — demo",
     description="Render a page and extract its brand colors, fonts, and clean text.",
 )
+
+
+@app.on_event("startup")
+async def _startup_banner() -> None:
+    """Log the render engine + active mode so the operator sees the config."""
+    logger.info("Render engine: Playwright + headless Chromium.")
+    if config.MODE == "polite":
+        logger.info("MODE=polite — honest UA, robots.txt respected, per-host paced.")
+    elif config.MODE == "stealth":
+        logger.warning("MODE=stealth requested but GATED — /analyze will error. %s",
+                       config.STEALTH_GATED_MESSAGE)
+    else:
+        logger.warning("Unknown MODE=%r — /analyze will error. Set MODE=polite.",
+                       config.MODE)
 
 # Resolve the static dir relative to this file so it works regardless of CWD.
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"

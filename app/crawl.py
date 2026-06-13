@@ -1,4 +1,4 @@
-"""Shallow brand crawl (ticket 07).
+"""Shallow brand crawl (ticket 07; engine + politeness from tickets 08/09).
 
 Homepage + the single best-matching about page + the single best-matching
 products/services page (hard cap of 3). Pages are discovered by scoring the
@@ -6,8 +6,13 @@ homepage's own links — no hardcoded URLs. Same registrable domain only.
 
   crawl(url) -> { source_url, text, colors, fonts, pages }
 
-Sub-page failures are skipped best-effort; only a homepage failure errors the
-whole request (there's nothing to read).
+Rendering uses Playwright + headless Chromium; subpages render concurrently in
+one browser context (real computed colors/fonts). MODE=polite (ticket 09) is
+applied: each request is robots-checked and per-host paced before it fires.
+MODE=stealth is gated (ticket 10).
+
+Sub-page failures are skipped best-effort; only a homepage failure (or a
+homepage disallowed by robots.txt) errors the whole request.
 """
 
 from __future__ import annotations
@@ -16,7 +21,9 @@ import asyncio
 import re
 from urllib.parse import urlparse
 
+from app import config
 from app.extract import extract_all, extract_links, rank_color_counts
+from app.polite import Politeness
 from app.render import RenderError, browser_session, render_in
 
 # Pattern groups — matched on BOTH path and link text, case-insensitive.
@@ -247,51 +254,80 @@ def _merge(pages: list[dict]) -> dict:
 # Orchestration
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _render_and_extract(browser, role: str, url: str) -> dict | None:
-    """Render + extract one sub-page best-effort. Returns None on any failure."""
-    page = None
+def _build_policy() -> Politeness:
+    """Return the active mode's request policy. Stealth mode is gated (ticket 10)."""
+    if config.MODE == "polite":
+        return Politeness(
+            config.POLITE_USER_AGENT,
+            config.POLITE_MIN_DELAY,
+            config.POLITE_MAX_CONCURRENCY,
+        )
+    if config.MODE == "stealth":
+        raise RenderError(config.STEALTH_GATED_MESSAGE)
+    raise RenderError(f"unknown MODE={config.MODE!r}; set MODE=polite")
+
+
+async def _render_extract_subpage(context, policy, role: str, url: str) -> dict | None:
+    """Robots-gate + pace + render + extract one sub-page. None on any failure.
+
+    Best-effort: a block / timeout / 404 / 429 / 503 / robots-disallow → None.
+    """
     try:
-        page = await render_in(browser, url)
-        result = await extract_all(page)
-        return {"role": role, "url": page.url, **result}
+        if not await policy.allowed(url):   # robots → skip this page
+            return None
+        await policy.wait_turn(url)         # per-host pacing
+        page = await render_in(context, url)
+        try:
+            result = await extract_all(page)
+            return {"role": role, "url": page.url, **result}
+        finally:
+            await page.close()
     except Exception:
         return None
-    finally:
-        if page is not None:
-            await page.close()
 
 
 async def crawl(start_url: str) -> dict:
-    """Crawl homepage + best about + best products page (≤ MAX_PAGES) and merge.
+    """Crawl homepage + best about + best products page (<= MAX_PAGES) and merge.
 
-    Raises `RenderError` if the homepage itself can't be read.
+    Subpages render concurrently in one Chromium context. Each request is
+    robots-checked and per-host paced first (MODE=polite).
+
+    Raises `RenderError` if the homepage can't be read or is disallowed by robots.
     """
-    async with browser_session() as browser:
-        # Homepage — failure here propagates (nothing to read).
-        home = await render_in(browser, start_url)
+    policy = _build_policy()  # raises RenderError if MODE=stealth (gated)
+
+    async with browser_session(policy.context_args()) as context:
+        # Homepage — failure (or robots-disallow) propagates (nothing to read).
+        if not await policy.allowed(start_url):
+            raise RenderError("the homepage is disallowed by robots.txt")
+        await policy.wait_turn(start_url)
+        home_page = await render_in(context, start_url)
         try:
-            home_url = home.url
-            home_result = await extract_all(home)
+            home_url = home_page.url
+            home_result = await extract_all(home_page)
             try:
-                links = await extract_links(home)
+                links = await extract_links(home_page)
             except Exception:
                 links = []
         finally:
-            await home.close()
-
+            await home_page.close()
         pages = [{"role": "home", "url": home_url, **home_result}]
 
-        # Discover + render the about/products pages concurrently (best-effort).
+        # Discover the about/products pages, then render them concurrently
+        # (best-effort), each robots-gated and per-host paced.
         selected = select_pages(home_url, links)
-        tasks = [
-            _render_and_extract(browser, role, selected[role])
+        subpages = [
+            (role, selected[role])
             for role in ("about", "products")
             if selected.get(role)
         ]
-        if tasks:
-            for result in await asyncio.gather(*tasks):
-                if result and len(pages) < MAX_PAGES:
-                    pages.append(result)
+        results = await asyncio.gather(
+            *(_render_extract_subpage(context, policy, role, url)
+              for role, url in subpages)
+        )
+        for result in results:
+            if result and len(pages) < MAX_PAGES:
+                pages.append(result)
 
     merged = _merge(pages)
     merged["source_url"] = pages[0]["url"]

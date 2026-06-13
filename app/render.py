@@ -1,42 +1,43 @@
 """Fetch + render module — Playwright headless Chromium.
 
 Launches headless Chromium, navigates to a URL, waits for the network to go
-idle so JS-rendered content is present, and yields the *live* page handle to
-the caller (the extraction step runs `page.evaluate(...)` against this same
-handle). The browser is always torn down afterwards, even on error.
+idle (best-effort, capped) so JS-rendered content and real computed styles are
+present, and returns the live page handle. The extraction step runs
+`page.evaluate(...)` / `page.content()` against the same page; `extract.py` is
+unchanged. The crawl renders the homepage + subpages concurrently in one
+context.
 
-Failures (timeout, blocked, empty) raise a single typed `RenderError` that the
-endpoint maps to the frontend's error state.
+The browser context carries the polite honest-UA (ticket 09) via `context_args`.
 
-NO bot-evasion (spec §6): default user-agent, no `navigator.webdriver` override,
-no stealth. If a site blocks us, that surfaces as a `RenderError`.
+Failures (launch error, timeout, blocked, empty) raise a typed `RenderError`
+the endpoint maps to the frontend's error state.
 """
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 from urllib.parse import urlparse
 
 from playwright.async_api import (
-    Browser,
+    BrowserContext,
     Error as PlaywrightError,
     Page,
     TimeoutError as PlaywrightTimeoutError,
     async_playwright,
 )
 
-# How long to wait for the navigation (DOMContentLoaded) to complete.
+# Navigation (DOMContentLoaded) timeout.
 NAV_TIMEOUT_MS = 30_000
-# How long to additionally wait for the network to go quiet. Analytics/polling
-# keep many real sites permanently "busy", so a timeout here is NOT fatal — the
-# DOM has rendered and we proceed with what loaded. Kept short (the main content
-# is present right after DOMContentLoaded) so a 3-page crawl stays demo-fast.
+# Best-effort wait for the network to go quiet after DOMContentLoaded.
+# Analytics-heavy sites never truly idle, so a timeout here is NOT fatal — the
+# DOM has rendered and we proceed with what loaded. Kept short so a 3-page crawl
+# stays demo-fast.
 NETWORK_IDLE_TIMEOUT_MS = 7_000
 
 
 class RenderError(Exception):
-    """The page genuinely could not be read (blocked, timed out, or empty).
+    """The page genuinely could not be read (launch failed, blocked, timed out, empty).
 
     Carries an optional HTTP status for context. The endpoint turns this into
     the section-3 error response; the frontend shows its clean error state.
@@ -63,29 +64,41 @@ def _normalize_url(url: str) -> str:
 
 
 @asynccontextmanager
-async def browser_session() -> AsyncIterator[Browser]:
-    """Launch one headless Chromium and yield it, closing it on exit.
+async def browser_session(
+    context_args: Optional[dict] = None,
+) -> AsyncIterator[BrowserContext]:
+    """Launch headless Chromium and yield one context (open pages in it).
 
-    Lets a caller render several pages (e.g. a shallow crawl) in a single
-    browser instead of paying the launch cost per page.
+    The crawl renders the homepage and subpages as separate pages in this single
+    context, so they all share the polite UA. The browser and context are closed
+    on exit, on success or error.
     """
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
         try:
-            yield browser
+            browser = await pw.chromium.launch(headless=True)
+        except Exception as exc:
+            raise RenderError(
+                "could not launch Chromium — run `playwright install chromium`."
+            ) from exc
+        try:
+            context = await browser.new_context(**(context_args or {}))
+            try:
+                yield context
+            finally:
+                await context.close()
         finally:
             await browser.close()
 
 
-async def render_in(browser: Browser, url: str) -> Page:
-    """Render `url` in a new page of an existing browser and return it live.
+async def render_in(context: BrowserContext, url: str) -> Page:
+    """Open a new page in `context`, load `url`, and return it live.
 
-    Raises `RenderError` if the page can't be loaded or has no readable content
+    Raises `RenderError` on a load failure, a hard HTTP error, or an empty body
     (the new page is closed before raising). On success the caller owns the
     returned page and must close it.
     """
     target = _normalize_url(url)
-    page = await browser.new_page()
+    page = await context.new_page()
     try:
         # 1) Load the document. A timeout or connection failure here is a
         #    genuine "couldn't read it" → RenderError.
@@ -107,14 +120,14 @@ async def render_in(browser: Browser, url: str) -> Page:
         except PlaywrightTimeoutError:
             pass
 
-        # 3) A hard HTTP error means the site blocked us or the page is gone.
+        # 3) A hard HTTP error means the site blocked us or the page is gone
+        #    (429/503 included — the crawl skips those best-effort).
         if response is not None and response.status >= 400:
             raise RenderError(
                 f"the site returned HTTP {response.status}", status=response.status
             )
 
-        # 4) Nothing readable rendered → treat as unreadable (e.g. a blank
-        #    block/challenge page).
+        # 4) Nothing readable rendered → treat as unreadable.
         body_text = (await page.evaluate(
             "() => (document.body && document.body.innerText || '').trim()"
         )) or ""
@@ -128,18 +141,17 @@ async def render_in(browser: Browser, url: str) -> Page:
 
 
 @asynccontextmanager
-async def render_page(url: str) -> AsyncIterator[Page]:
-    """Render `url` in its own browser and yield the live Playwright page.
+async def render_page(
+    url: str, context_args: Optional[dict] = None
+) -> AsyncIterator[Page]:
+    """Render a single `url` and yield the live page (standalone convenience).
 
     Usage:
         async with render_page(url) as page:
-            ...  # run page.evaluate(...) / page.content() while the page is live
-
-    The Chromium instance is closed when the context exits, on success or error.
-    Raises `RenderError` if the page can't be loaded or has no readable content.
+            ...  # page.evaluate(...) / page.content() while live
     """
-    async with browser_session() as browser:
-        page = await render_in(browser, url)
+    async with browser_session(context_args) as context:
+        page = await render_in(context, url)
         try:
             yield page
         finally:

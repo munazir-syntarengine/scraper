@@ -1,10 +1,13 @@
 # Brand Website Scraper — demo
 
 A standalone proof-of-concept: paste a brand's website URL, and it renders the
-site with a headless browser and pulls out the brand's **real colors**, its
-**heading and body fonts**, and its **clean text** — straight from the live
-computed styles. It does a shallow crawl (homepage + the best-matching *about*
-and *products* pages) and shows the result in a simple web UI.
+site with a headless browser and pulls out the brand's colors, heading/body
+fonts, and clean text. It does a shallow crawl (homepage + the best-matching
+*about* and *products* pages) and shows the result in a simple web UI.
+
+The render engine is **Playwright + headless Chromium**, which exposes real
+computed styles — so the color and font extraction works. It does a shallow
+crawl and shows the result in a simple web UI.
 
 This is a **demo**, not production. See [What this proves / does not prove](#what-this-proves--does-not-prove).
 
@@ -30,23 +33,22 @@ playwright install chromium        # downloads the headless browser (~once)
 uvicorn app.main:app
 ```
 
-Then open **http://localhost:8000** in your browser.
-
-(If you didn't activate the venv, run `.\.venv\Scripts\python.exe -m uvicorn app.main:app`.)
+Then open **http://localhost:8000** in your browser. (If you didn't activate the
+venv: `.\.venv\Scripts\python.exe -m uvicorn app.main:app`.) The startup log
+shows the render engine + active mode.
 
 ## Try it
 
 - `https://www.mailchimp.com` is pre-filled — click **Analyze**. You'll see the
-  processing state, then a palette, the heading/body fonts, and the cleaned text
-  pooled across the pages it crawled (home, about, products).
+  processing state, then the brand palette, heading/body fonts, and the cleaned
+  text pooled across the pages it crawled (home, about, products).
 - Other sites that demo well: `https://stripe.com`, `https://www.oatly.com`.
-- **Error-state example:** `https://www.theglenlivet.com` — alcohol brands gate
-  behind bot protection and return HTTP 403. We don't evade it (by design), so
-  the UI shows its clean error state. That's the expected "site blocked us" path.
+- **Error-state example:** `https://www.theglenlivet.com` — in the default
+  polite mode its robots.txt disallows our bot, so the UI shows its clean error
+  state (we don't evade it).
 
-Each analyze renders up to 3 real pages in a headless browser, so expect roughly
-**10–20 seconds** per site (the first run after launch is a little slower while
-Chromium warms up).
+Each analyze renders up to 3 real pages (subpages concurrently) with polite
+per-host pacing — roughly **10–25 seconds** per site.
 
 ---
 
@@ -55,11 +57,12 @@ Chromium warms up).
 One FastAPI process serves both the API and the frontend.
 
 1. **Render** ([app/render.py](app/render.py)) — launches headless Chromium,
-   navigates to the URL, waits for `DOMContentLoaded`, then waits up to 7s for
-   the network to go quiet (best-effort — analytics-heavy sites never truly
-   idle, so we proceed with what rendered). A blocked / timed-out / empty page
-   raises a clean `RenderError`. **No bot-evasion**: default user-agent, no
-   `navigator.webdriver` override.
+   applies the polite honest-UA context, navigates with
+   `wait_until="domcontentloaded"`, then waits up to 7s for the network to go
+   quiet (best-effort — analytics-heavy sites never truly idle, so we proceed
+   with what rendered). A launch failure, timeout, hard HTTP error, or empty
+   page raises a clean `RenderError`. The crawl opens the homepage + subpages as
+   separate pages in one context.
 
 2. **Extract** ([app/extract.py](app/extract.py)) — runs inline JS against the
    live page via `page.evaluate`:
@@ -85,12 +88,14 @@ One FastAPI process serves both the API and the frontend.
      (shallowest, shortest) page wins.
    - Picks the single best **about** and **products** page (no hardcoded URLs).
      A group with no confident match is **skipped** — never a wrong guess.
-   - Renders the selected pages **concurrently** (homepage + up to 2 = **max 3**).
+   - Renders the selected pages **concurrently**, each robots-checked and
+     per-host paced first (homepage + up to 2 = **max 3**).
    - **Merges:** text pooled with per-page headers; colors merged across pages by
      frequency (top 3–5 overall); fonts taken from the homepage (the hero defines
      the brand), falling back to other pages only for a missing role.
-   - Per-page best-effort: a sub-page that blocks / times out / 404s is skipped
-     and the crawl continues. Only an unreadable **homepage** errors the request.
+   - Per-page best-effort: a sub-page that blocks / times out / 404s / 429s /
+     503s, or is disallowed by robots.txt, is skipped and the crawl continues.
+     Only an unreadable (or robots-disallowed) **homepage** errors the request.
 
 4. **Frontend** ([static/index.html](static/index.html)) — the design reference,
    wired to the live endpoint. The source line lists the pages read
@@ -123,21 +128,74 @@ One FastAPI process serves both the API and the frontend.
 
 `GET /health` → `{ "ok": true }`.
 
+> Best-effort: if an extraction pass finds nothing it degrades to `[]` / `null`
+> rather than failing the request — the contract shape is unchanged.
+
+---
+
+## Modes
+
+The mode is chosen **once at startup** via the `MODE` env var. The two modes are
+mutually exclusive — never switched mid-crawl, never combined.
+
+### `MODE=polite` (default)
+
+The crawl identifies itself honestly and behaves well — the opposite of evasion:
+
+- **Honest user-agent:** `SyntarBrandBot/0.1 (+…)` on the browser context (no
+  masking, no random-browser UA). Override with `SCRAPER_USER_AGENT`.
+- **robots.txt respected** per host: a disallowed sub-page is skipped; a
+  disallowed homepage errors cleanly. `Crawl-delay` is honored when larger than
+  the floor.
+- **Per-host pacing:** at least `POLITE_MIN_DELAY` (default 2s) between requests
+  to the same host; concurrency cap `POLITE_MAX_CONCURRENCY` (default 2).
+- **Backoff:** HTTP 429/503 → the page is skipped (no aggressive retry loop).
+
+**Trade-off (by design):** an honest UA + robots compliance means *more* sites
+may legitimately block the demo. That is correct, respectful behavior.
+
+### `MODE=stealth` (gated — not enabled in this build)
+
+Stealth mode is specified as bot-detection **evasion** (randomized realistic
+fingerprint, `navigator.webdriver` patching, humanized mouse/scroll, robots.txt
+bypass, referer spoofing, CAPTCHA/Cloudflare handling). Its purpose is to access
+sites that have actively chosen to block bots.
+
+It is **intentionally not implemented here** and is gated behind explicit
+authorization for a specific, permitted target. Setting `MODE=stealth` logs a
+warning at startup and makes `/analyze` return a clear "stealth not enabled"
+error. Evasion of access controls and challenge systems is legally and ethically
+fraught; enable it only against sites you own or are explicitly authorized to
+test. See `tickets/10-stealth-mode.md`.
+
+---
+
+## Render engine
+
+**Playwright + headless Chromium** (`playwright install chromium`). Chromium
+exposes real computed styles, so the color and font extraction works — this is
+what gives the demo its brand palette and typography. Subpages render
+**concurrently** in one browser context, with a best-effort `networkidle` settle
+(capped, so analytics-heavy sites don't hang the crawl). Polite mode (honest UA,
+robots.txt, per-host pacing) applies here.
+
 ---
 
 ## What this proves / does not prove
 
 **Proves** — the extraction technique works: real computed brand colors, the
 actual heading/body fonts, and clean rendered text, pulled live from a
-headless-rendered page, across a shallow multi-page brand crawl.
+headless-rendered page, across a shallow multi-page brand crawl with no
+hardcoded URLs, plus polite self-identifying scraping (honest UA, robots.txt).
 
 **Does NOT prove** — the production concerns, deliberately left out (these are
 the real-build follow-on):
 
 - **No SSRF / URL validation.** Test URLs are trusted operator input. This is a
   known production requirement, omitted on purpose.
-- **No anti-bot / Cloudflare / CAPTCHA handling, and no bot-evasion.** A site
-  that blocks the request simply shows the error state.
+- **No bot-evasion in the default (polite) mode** — robots.txt is respected and
+  the UA is honest, so a site that blocks the request simply shows the error
+  state. (Evasion lives only in the **gated, unimplemented** stealth mode.)
 - **No caching, database, queue, Temporal, synthesis, or Cora.**
 - **No deep crawling** — only the homepage plus the named about/products pages,
   same registrable domain only, no link-following from sub-pages.
