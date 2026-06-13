@@ -206,6 +206,12 @@ _STRIP_TAGS = ("script", "style", "noscript", "svg", "form", "iframe")
 _BOILER_TAGS = ("nav", "footer", "aside")
 # Substrings in class/id that mark boilerplate (spec §4).
 _BOILER_SUBSTR = ("cookie", "banner", "footer", "nav", "popup", "newsletter")
+# A class/id-flagged element is only stripped if it holds at most this share of
+# the page's text blocks. Above it, the "boilerplate" token is almost certainly
+# a theme marker on a big wrapper (e.g. WordPress puts `ehf-footer
+# nav-float-right` on <body>), not an actual nav/footer — stripping it would
+# nuke the whole page.
+_BOILER_MAX_CONTENT_SHARE = 0.5
 # Tags we flatten into the cleaned text, in document order.
 _TEXT_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "li")
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -245,11 +251,23 @@ def clean_text(html: str) -> str:
         tag.decompose()
 
     # Drop boilerplate by class/id (nav, cookie banner, footer, newsletter, ads).
+    # Two guards stop a theme's boilerplate-ish token on a big container from
+    # nuking real content: never strip the structural root (<html>/<body>), and
+    # never strip an element holding most of the page's text (a genuine
+    # nav/footer/cookie widget is a small fraction of it).
+    text_tag_total = len(soup.find_all(list(_TEXT_TAGS)))
     for el in soup.find_all(True):
         if getattr(el, "decomposed", False):
             continue
+        if el.name in ("html", "body"):
+            continue
         class_id = " ".join(el.get("class") or []) + " " + (el.get("id") or "")
         if class_id.strip() and _is_boilerplate(class_id.lower()):
+            if text_tag_total and (
+                len(el.find_all(list(_TEXT_TAGS)))
+                > text_tag_total * _BOILER_MAX_CONTENT_SHARE
+            ):
+                continue
             el.decompose()
 
     blocks: list[str] = []
