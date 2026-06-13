@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Brand Scraper — design reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     SyntarEngine design language — scraper demo
+     Inter throughout · single-blue icon markers · content-first
+     (the EXTRACTED brand supplies the color; chrome stays neutral)
+     Two states in one file: input/empty + result. Analyze button
+     reveals a mock result so both states are visible.
+     Map token placeholders to globals.css when implementing.
+     ============================================================ */
+  :root{
+    --surface:#fff; --surface-muted:#f6f7f9;
+    --text:#1a1d23; --text-muted:#5d6470; --text-faint:#9aa1ad;
+    --hairline:#e4e7ec; --hairline-strong:#cfd4dc;
+    --blue:#2f7fd6; --blue-soft:rgba(47,127,214,.10); --blue-ink:#0c447c;
+    --danger:#c2402f; --danger-soft:rgba(194,64,47,.07);
+    --r:8px; --r-lg:12px;
+    --f:'Inter',-apple-system,"Segoe UI",sans-serif;
+    --mono:"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--f);background:var(--surface-muted);color:var(--text);padding:40px 24px;font-size:14px;line-height:1.5}
+  .page{max-width:880px;margin:0 auto}
+
+  /* header */
+  .top{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+  .logo{width:30px;height:30px;border-radius:7px;background:#0EA5E9;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:15px}
+  .top .name{font-weight:600;font-size:16px}
+  .top .name span{color:var(--text-muted);font-weight:400}
+  .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.05em;color:var(--text-faint);margin:18px 0 6px}
+  h1{font-size:28px;font-weight:600;line-height:1.15;margin-bottom:8px}
+  .lede{font-size:15px;color:var(--text-muted);max-width:560px;margin-bottom:26px}
+
+  /* input row */
+  .analyze-card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--r-lg);padding:20px}
+  .input-row{display:flex;gap:10px}
+  .url-input{flex:1;height:44px;padding:10px 14px;font-size:15px;font-family:var(--f);color:var(--text);background:var(--surface);border:1px solid var(--hairline);border-radius:var(--r);outline:none;transition:border-color .12s,box-shadow .12s}
+  .url-input::placeholder{color:var(--text-faint)}
+  .url-input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-soft)}
+  .btn{font-family:var(--f);font-size:15px;font-weight:500;height:44px;padding:0 22px;border-radius:var(--r);cursor:pointer;border:none;background:var(--blue);color:#fff;display:inline-flex;align-items:center;gap:8px;flex:none}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn svg{width:16px;height:16px}
+  .hint{font-size:12px;color:var(--text-faint);margin-top:10px;display:flex;align-items:center;gap:6px}
+  .hint svg{width:13px;height:13px;flex:none}
+
+  /* empty hint state */
+  .empty{margin-top:28px;text-align:center;padding:40px 20px;color:var(--text-faint)}
+  .empty svg{width:30px;height:30px;margin-bottom:10px;opacity:.6}
+  .empty p{font-size:14px}
+
+  /* processing */
+  .proc{display:none;margin-top:28px;align-items:center;justify-content:center;gap:11px;padding:40px;font-family:var(--mono);font-size:13px;color:var(--text-muted)}
+  .proc.show{display:flex}
+  @keyframes ps{0%,100%{opacity:.25}50%{opacity:1}}
+  .ps1{width:9px;height:9px;border-radius:50%;background:var(--blue);animation:ps 1.2s ease-in-out infinite}
+  .ps2{width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid var(--blue);animation:ps 1.2s ease-in-out .4s infinite}
+  .ps3{width:9px;height:9px;background:var(--blue);animation:ps 1.2s ease-in-out .8s infinite}
+  @media(prefers-reduced-motion:reduce){.ps1,.ps2,.ps3{animation:none;opacity:.6}}
+
+  /* result */
+  .result{display:none;margin-top:24px}
+  .result.show{display:block}
+  .src-line{font-family:var(--mono);font-size:12px;color:var(--text-faint);margin-bottom:16px;display:flex;align-items:center;gap:7px}
+  .src-line svg{width:13px;height:13px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+  .card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--r-lg);padding:20px}
+  .sec-head{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+  .sec-icon{width:22px;height:22px;border-radius:50%;background:var(--blue-soft);color:var(--blue);display:flex;align-items:center;justify-content:center;flex:none}
+  .sec-icon svg{width:12px;height:12px}
+  .sec-label{font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--blue)}
+
+  /* colors — content-first: the brand's own colors dominate */
+  .swatches{display:flex;flex-wrap:wrap;gap:10px}
+  .sw{display:flex;flex-direction:column;gap:6px}
+  .sw .chip{width:72px;height:56px;border-radius:var(--r);border:1px solid rgba(0,0,0,.06)}
+  .sw .hex{font-family:var(--mono);font-size:11px;color:var(--text-muted);text-align:center}
+
+  /* fonts */
+  .font-item{margin-bottom:14px}
+  .font-item:last-child{margin-bottom:0}
+  .font-role{font-size:12px;color:var(--text-faint);margin-bottom:2px}
+  .font-name{font-size:15px;font-weight:500;margin-bottom:4px}
+  .font-preview{font-size:22px;color:var(--text);line-height:1.2}
+
+  /* text panel */
+  .text-card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--r-lg);padding:20px}
+  .text-scroll{max-height:280px;overflow-y:auto;font-size:14px;line-height:1.7;color:var(--text-muted);padding-right:10px;margin-top:10px}
+  .text-scroll p{margin-bottom:12px}
+  .text-scroll h4{font-size:14px;color:var(--text);margin-bottom:6px;font-weight:600}
+
+  /* error state */
+  .error{display:none;margin-top:24px;background:var(--danger-soft);border:1px solid rgba(194,64,47,.25);border-radius:var(--r-lg);padding:18px 20px;align-items:flex-start;gap:12px}
+  .error.show{display:flex}
+  .error svg{width:18px;height:18px;color:var(--danger);flex:none;margin-top:1px}
+  .error .et{font-weight:500;color:var(--danger);margin-bottom:2px}
+  .error .ed{font-size:13px;color:var(--text-muted)}
+
+  .demo-note{margin-top:40px;font-family:var(--mono);font-size:11px;color:var(--text-faint);text-align:center;border-top:1px solid var(--hairline);padding-top:16px}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="top">
+    <div class="logo">S</div>
+    <div class="name">Syntar<span>Engine</span></div>
+  </div>
+
+  <p class="kicker">brand element scraper · demo</p>
+  <h1>Read a brand from its website.</h1>
+  <p class="lede">Paste a URL. We render the page and pull out its real brand colors, its heading and body fonts, and its clean text — straight from the live computed styles.</p>
+
+  <div class="analyze-card">
+    <div class="input-row">
+      <input class="url-input" id="url" type="text" placeholder="https://www.mailchimp.com" value="https://www.mailchimp.com">
+      <button class="btn" id="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>Analyze</button>
+    </div>
+    <p class="hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>Reads the homepage plus its about and products pages. No login-walled content.</p>
+  </div>
+
+  <!-- empty -->
+  <div class="empty" id="empty">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+    <p>Results will appear here — palette, fonts, and cleaned text.</p>
+  </div>
+
+  <!-- processing -->
+  <div class="proc" id="proc">
+    <span class="ps1"></span><span class="ps2"></span><span class="ps3"></span>
+    <span id="procmsg">rendering the page…</span>
+  </div>
+
+  <!-- error -->
+  <div class="error" id="error">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+    <div><p class="et">Couldn't read this site</p><p class="ed">The page blocked the request or timed out. Try another URL.</p></div>
+  </div>
+
+  <!-- result -->
+  <div class="result" id="result">
+    <p class="src-line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a3.5 3.5 0 0 0 5 0l4-4a3.5 3.5 0 0 0-5-5l-.5.5"/><path d="M14 10a3.5 3.5 0 0 0-5 0l-4 4a3.5 3.5 0 0 0 5 5l.5-.5"/></svg>read from theglenlivet.com · rendered with headless Chromium</p>
+
+    <div class="grid">
+      <div class="card">
+        <div class="sec-head"><div class="sec-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.6-3.6a2 2 0 0 0-2.8 0L6 21"/></svg></div><span class="sec-label">brand colors</span></div>
+        <div class="swatches">
+          <div class="sw"><div class="chip" style="background:#b8742a"></div><span class="hex">#B8742A</span></div>
+          <div class="sw"><div class="chip" style="background:#1a1a1a"></div><span class="hex">#1A1A1A</span></div>
+          <div class="sw"><div class="chip" style="background:#5a3a1a"></div><span class="hex">#5A3A1A</span></div>
+          <div class="sw"><div class="chip" style="background:#c9a14a"></div><span class="hex">#C9A14A</span></div>
+          <div class="sw"><div class="chip" style="background:#e8e0cf"></div><span class="hex">#E8E0CF</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head"><div class="sec-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></div><span class="sec-label">typography</span></div>
+        <div class="font-item">
+          <p class="font-role">Heading</p>
+          <p class="font-name">Trajan Pro</p>
+          <p class="font-preview" style="font-family:Georgia,serif">Heritage Theme</p>
+        </div>
+        <div class="font-item">
+          <p class="font-role">Body</p>
+          <p class="font-name">Söhne</p>
+          <p class="font-preview" style="font-size:15px;color:var(--text-muted)">The single malt that started it all.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="text-card">
+      <div class="sec-head"><div class="sec-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg></div><span class="sec-label">cleaned text</span></div>
+      <div class="text-scroll">
+        <h4>The Single Malt That Started It All</h4>
+        <p>Since 1824, The Glenlivet has defined what single malt Scotch whisky could be. Founded by George Smith in the heart of Speyside, the distillery built its reputation on a smooth, balanced character that remains its signature today.</p>
+        <p>Every expression begins with the same patient process — clear Highland water, careful cask selection, and time. The result is a range that rewards the curious, from the approachable 12 Year Old to the deeply layered rare reserves.</p>
+        <p>Boilerplate — navigation, the cookie banner, the newsletter form, and the footer — has been stripped. What remains is the readable content of the page, flattened from its headings and paragraphs.</p>
+      </div>
+    </div>
+  </div>
+
+  <p class="demo-note">demo · extraction technique only — production concerns (SSRF, hostile-site handling, scale, synthesis) are the real-build follow-on</p>
+</div>
+
+<script>
+  const $=id=>document.getElementById(id);
+
+  // ── helpers ────────────────────────────────────────────────────────────
+  const SRC_SUFFIX = ' · rendered with headless Chromium';
+
+  function domainOf(url){
+    try { return new URL(url).hostname.replace(/^www\./,''); }
+    catch { return url; }
+  }
+
+  // Apply a returned font to a .font-item (name + preview), or a neutral
+  // placeholder when the role wasn't detected (null).
+  function setFont(item, font, sample){
+    const nameEl = item.querySelector('.font-name');
+    const prevEl = item.querySelector('.font-preview');
+    if(font){
+      nameEl.textContent = font;
+      prevEl.textContent = sample;
+      // Preview in the real font if the browser has it; fall back to Inter.
+      prevEl.style.fontFamily = '"' + font + '", "Inter", sans-serif';
+    } else {
+      nameEl.textContent = 'Not detected';
+      prevEl.textContent = '—';
+      prevEl.style.fontFamily = '';
+    }
+  }
+
+  function renderResult(data){
+    // source line — keep the link icon, replace the domain + tail.
+    // List the pages crawled (home, about, products) when more than one.
+    const srcLine = document.querySelector('.src-line');
+    const icon = srcLine.querySelector('svg').outerHTML;
+    const domain = domainOf(data.source_url);
+    const pages = data.pages || [];
+    let label = 'read from ' + domain;
+    if(pages.length > 1){
+      label += ' · ' + pages.length + ' pages: ' + pages.map(p => p.role).join(', ');
+    }
+    srcLine.innerHTML = icon + label + SRC_SUFFIX;
+
+    // colors → one .sw per hex (clear the reference's mock swatches first)
+    const swatches = document.querySelector('.swatches');
+    swatches.innerHTML = '';
+    const colors = data.colors || [];
+    if(colors.length){
+      colors.forEach(hex => {
+        const sw = document.createElement('div'); sw.className = 'sw';
+        const chip = document.createElement('div'); chip.className = 'chip';
+        chip.style.background = hex;
+        const label = document.createElement('span'); label.className = 'hex';
+        label.textContent = hex.toUpperCase();
+        sw.appendChild(chip); sw.appendChild(label);
+        swatches.appendChild(sw);
+      });
+    } else {
+      const note = document.createElement('span'); note.className = 'hex';
+      note.textContent = 'no dominant colors detected';
+      swatches.appendChild(note);
+    }
+
+    // fonts → the two .font-item blocks (heading, then body)
+    const fonts = data.fonts || {};
+    const items = document.querySelectorAll('.font-item');
+    setFont(items[0], fonts.heading, 'Aa Bb Cc 123');
+    setFont(items[1], fonts.body, 'The quick brown fox jumps over the lazy dog.');
+
+    // text → .text-scroll, preserving heading vs paragraph separation.
+    // Backend blocks: "## " heading, "• " list item, else paragraph.
+    // textContent (never innerHTML) so scraped markup can't inject into the DOM.
+    const scroll = document.querySelector('.text-scroll');
+    scroll.innerHTML = '';
+    const text = (data.text || '').trim();
+    if(text){
+      text.split(/\n{2,}/).forEach(block => {
+        block = block.trim();
+        if(!block) return;
+        let el;
+        if(block.startsWith('## ')){
+          el = document.createElement('h4');
+          el.textContent = block.slice(3).trim();
+        } else {
+          el = document.createElement('p');
+          el.textContent = block; // paragraphs as-is; list items keep their •
+        }
+        scroll.appendChild(el);
+      });
+    } else {
+      const p = document.createElement('p');
+      p.textContent = 'No readable text was extracted from this page.';
+      scroll.appendChild(p);
+    }
+  }
+
+  // ── analyze flow ───────────────────────────────────────────────────────
+  let procTimer = null;
+
+  function endProc(){
+    clearInterval(procTimer);
+    $('proc').classList.remove('show');
+    $('go').disabled = false;
+  }
+
+  function analyze(){
+    const url = $('url').value.trim();
+    if(!url) return;
+
+    $('empty').style.display = 'none';
+    $('result').classList.remove('show');
+    $('error').classList.remove('show');
+    $('proc').classList.add('show');
+    $('go').disabled = true;
+
+    // rotating processing messages (kept from the reference)
+    const msgs = ['rendering the page…','waiting for network idle…','reading computed styles…','cleaning the text…'];
+    $('procmsg').textContent = msgs[0];
+    let i = 1;
+    clearInterval(procTimer);
+    procTimer = setInterval(() => { if(i < msgs.length) $('procmsg').textContent = msgs[i++]; }, 650);
+
+    fetch('/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    })
+    .then(resp => { if(!resp.ok) throw new Error('analyze failed'); return resp.json(); })
+    .then(data => {
+      renderResult(data);
+      endProc();
+      $('result').classList.add('show');
+    })
+    .catch(() => {
+      endProc();
+      $('error').classList.add('show');
+    });
+  }
+
+  $('go').addEventListener('click', analyze);
+  $('url').addEventListener('keydown', e => { if(e.key === 'Enter') analyze(); });
+</script>
+</body>
+</html>

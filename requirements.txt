@@ -1,0 +1,16 @@
+# Brand Website Scraper Demo — Python dependencies
+# Install:  pip install -r requirements.txt
+# Then:     playwright install chromium
+
+# Web framework + ASGI server
+fastapi>=0.115
+uvicorn[standard]>=0.34
+
+# Headless render (Chromium) — fetch + render the target page.
+# Pinned to match the Docker base image tag (mcr.microsoft.com/playwright/python
+# :v1.60.0-noble) so the bundled Chromium + OS libraries line up in the container.
+playwright==1.60.0
+
+# HTML -> text cleaner (boilerplate stripping + flattening)
+beautifulsoup4>=4.12
+lxml>=5.3

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Environment files / secrets
+.env
+.env.*
+*.env
+
+# Playwright browser binaries are installed via `playwright install chromium`
+# (not vendored into the repo)
+ms-playwright/
+.cache/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

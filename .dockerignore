@@ -1,0 +1,32 @@
+# Keep the build context (and image) lean.
+
+# Python virtualenv + caches
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Git
+.git/
+.gitignore
+
+# Docker meta (not needed inside the image)
+Dockerfile
+.dockerignore
+
+# Local Playwright browser cache (browsers are installed in the image instead)
+ms-playwright/
+.cache/
+
+# Env files / secrets
+.env
+.env.*
+*.env
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
