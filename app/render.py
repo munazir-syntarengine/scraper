@@ -38,6 +38,16 @@ NAV_TIMEOUT_MS = 30_000
 # stays demo-fast.
 NETWORK_IDLE_TIMEOUT_MS = 7_000
 
+# Statuses that mean we got a block/challenge or an outage page, not the site
+# itself — the body is never real content, so we fail fast regardless of it.
+# Other error statuses (notably 404) are NOT fatal on their own: some SPAs/CDNs
+# serve the real, fully-rendered page with an odd status, so we trust the
+# rendered content instead (see the content gate in render_in).
+_BLOCK_STATUSES = {401, 403, 407, 429}
+# Below this many characters of rendered text, an error-status (>=400) page is
+# treated as a genuine not-found/error page rather than usable content.
+_MIN_CONTENT_CHARS = 200
+
 
 class RenderError(Exception):
     """The page genuinely could not be read (launch failed, blocked, timed out, empty).
@@ -135,12 +145,14 @@ async def render_in(
         except PlaywrightTimeoutError:
             pass
 
-        # 3) A hard HTTP error means the site blocked us or the page is gone
-        #    (429/503 included — the crawl skips those best-effort).
-        if response is not None and response.status >= 400:
-            raise RenderError(
-                f"the site returned HTTP {response.status}", status=response.status
-            )
+        # 3) Block / outage statuses (401/403/429/5xx) mean we got a challenge or
+        #    error page, not the site — fail fast. Other error statuses (notably
+        #    404) are NOT fatal on their own: some SPAs/CDNs serve the real,
+        #    fully-rendered page with an odd status, so we defer to the content
+        #    gate below and trust what actually rendered.
+        status = response.status if response is not None else None
+        if status is not None and (status in _BLOCK_STATUSES or status >= 500):
+            raise RenderError(f"the site returned HTTP {status}", status=status)
 
         # 3.5) Accept cookies + pass any age gate. Best-effort: a no-op on pages
         #      without gates. Only re-wait for the network when we actually acted
@@ -155,12 +167,16 @@ async def render_in(
                 except PlaywrightTimeoutError:
                     pass
 
-        # 4) Nothing readable rendered → treat as unreadable.
+        # 4) Content gate. Empty → unreadable. A non-2xx status with only a thin
+        #    body is a genuine error page (e.g. "404 Not Found"); a rich body
+        #    means the page rendered fine despite the status, so we keep it.
         body_text = (await page.evaluate(
             "() => (document.body && document.body.innerText || '').trim()"
         )) or ""
         if not body_text:
             raise RenderError("the page returned no readable content")
+        if status is not None and status >= 400 and len(body_text) < _MIN_CONTENT_CHARS:
+            raise RenderError(f"the site returned HTTP {status}", status=status)
 
         return page
     except BaseException:
