@@ -1,8 +1,9 @@
 """Shallow brand crawl (ticket 07; engine + politeness from tickets 08/09).
 
-Homepage + the single best-matching about page + the single best-matching
-products/services page (hard cap of 3). Pages are discovered by scoring the
-homepage's own links — no hardcoded URLs. Same registrable domain only.
+Homepage (always) + the top 4 best-matching internal pages (hard cap of 5).
+Every same-domain link is scored against informative-page patterns (about,
+products/services, contact, news); the 4 highest-scoring distinct pages are
+crawled — no hardcoded URLs, no per-category quota. Same registrable domain only.
 
   crawl(url) -> { source_url, text, colors, fonts, pages }
 
@@ -26,7 +27,11 @@ from app.extract import extract_all, extract_links, rank_color_counts
 from app.polite import Politeness
 from app.render import RenderError, browser_session, render_in
 
-# Pattern groups — matched on BOTH path and link text, case-insensitive.
+# Pattern groups — matched on BOTH path and link text, case-insensitive. Each
+# group also names the role a selected page is labelled with. Selection is NOT
+# one-per-group: every link is scored against all groups and the top matches win
+# (see select_pages), so a site can contribute e.g. two "about" pages if those
+# happen to be its strongest links.
 ABOUT_PATTERNS = [
     "about", "story", "who-we-are", "who-we-our", "what-we-do",
     "our-mission", "mission", "philosophy", "team", "company", "our-story",
@@ -35,24 +40,41 @@ PRODUCT_PATTERNS = [
     "product", "products", "service", "services", "shop", "store",
     "collection", "collections", "what-we-offer", "solutions", "menu", "pricing",
 ]
+CONTACT_PATTERNS = [
+    "contact", "contact-us", "get-in-touch", "reach-us",
+    "locations", "find-us", "visit-us",
+]
+NEWS_PATTERNS = [
+    "blog", "news", "press", "insights", "articles",
+]
 
-# Friendly labels for the response / frontend.
-ROLE_LABELS = {"home": "home", "about": "about", "products": "products"}
+# (role, patterns) in tie-break priority order: when a link scores equally for
+# two groups, the earlier group names it; and when two *pages* tie on score,
+# the earlier group's page is picked first (brand-core pages over news).
+PAGE_CATEGORIES = [
+    ("about", ABOUT_PATTERNS),
+    ("products", PRODUCT_PATTERNS),
+    ("contact", CONTACT_PATTERNS),
+    ("news", NEWS_PATTERNS),
+]
+ROLE_PRIORITY = {role: i for i, (role, _patterns) in enumerate(PAGE_CATEGORIES)}
 
-# Max pages rendered (homepage + about + products).
-MAX_PAGES = 3
+# Friendly labels for the response / frontend. Unlisted roles fall back to the
+# role string itself (title-cased) in the merge.
+ROLE_LABELS = {
+    "home": "home", "about": "about", "products": "products",
+    "contact": "contact", "news": "news",
+}
 
-# Minimum score for a link to be selected. The path keyword (+3) or a multi-word
-# text phrase (+3) clears this; a lone ambiguous text token like "story" in
-# "Read the story" (+1) does not — so we skip the group rather than crawl a
-# customer success story as if it were the brand's about page.
+# The rule: always the homepage, then up to this many best-matching subpages.
+MAX_SUBPAGES = 4
+MAX_PAGES = 1 + MAX_SUBPAGES  # homepage + 4
+
+# Minimum score for a link to be selected. A path keyword (+3) or a multi-word
+# path phrase (+4) clears this; a lone ambiguous text token like "story" in
+# "Read the story" (+1) does not — so we don't crawl a customer success story as
+# if it were the brand's about page.
 MIN_SELECT_SCORE = 3
-
-# When a shallower (more top-level) page scores within this many points of the
-# best match, prefer it — /pricing reads cleaner in the demo than a deep
-# /solutions/email-sms-professional-services page that only out-scored it by
-# matching a second path keyword.
-SHALLOW_TIEBREAK_DELTA = 3
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,50 +151,40 @@ def _path_depth(url: str) -> int:
     return len([seg for seg in urlparse(url).path.split("/") if seg])
 
 
-def _choose(candidates: list[tuple[str, int]]) -> tuple[int, str | None]:
-    """Pick the best URL from scored (url, score) candidates for one group.
+def _classify(path: str, text: str) -> tuple[int, str | None]:
+    """Best (score, role) for a link across all category groups.
 
-    Returns (score, url) or (best_score, None) if nothing clears the threshold.
-    Among matches within SHALLOW_TIEBREAK_DELTA of the top score, prefer the
-    shallowest path (cleaner top-level page), then the higher score, then the
-    first seen (stable order).
+    The link is scored against every group; the highest-scoring group wins and
+    names the page's role. Ties break toward the earlier group in PAGE_CATEGORIES.
+    Returns (0, None) if the link matches nothing.
     """
-    if not candidates:
-        return (0, None)
-    best_score = max(score for _, score in candidates)
-    if best_score < MIN_SELECT_SCORE:
-        return (best_score, None)
-    contenders = [
-        (url, score)
-        for url, score in candidates
-        if score >= best_score - SHALLOW_TIEBREAK_DELTA
-    ]
-    # Among close-scoring matches, prefer the cleaner page: shallowest path,
-    # then shortest path string, then higher score (stable for first-seen).
-    def _rank(item):
-        url, score = item
-        path = urlparse(url).path.rstrip("/")
-        return (_path_depth(url), len(path), -score)
-
-    contenders.sort(key=_rank)
-    url, score = contenders[0]
-    return (score, url)
+    best_score, best_role = 0, None
+    for role, patterns in PAGE_CATEGORIES:
+        score = _score(path, text, patterns)
+        if score > best_score:
+            best_score, best_role = score, role
+    return best_score, best_role
 
 
-def select_pages(home_url: str, links: list[dict]) -> dict[str, str | None]:
-    """Pick the best about + products URL from the homepage's links.
+def select_pages(home_url: str, links: list[dict]) -> list[tuple[str, str]]:
+    """The top `MAX_SUBPAGES` best-matching internal pages from the homepage.
 
-    Returns {'about': url|None, 'products': url|None}. Excludes the homepage and
-    off-domain links; ensures the two roles don't resolve to the same URL.
+    Every same-domain link (minus the homepage and off-domain links) is scored
+    against the category groups; the highest-scoring distinct pages that clear
+    MIN_SELECT_SCORE are returned as (role, url), best first. No per-category
+    quota — the strongest links win regardless of which group they match, so the
+    same section can appear more than once if those are the top links.
+
+    Ranking: score desc, then shallower path, then category priority (brand-core
+    over news), then shorter path, then first seen on the page (stable) — so
+    ties resolve to the cleaner, more brand-central page.
     """
     home_canon = _canonical(home_url)
     registrable = _registrable_domain(home_url)
 
-    # role -> {canonical_url: best_score}, insertion order = first seen on page.
-    candidates: dict[str, dict[str, int]] = {"about": {}, "products": {}}
-    groups = (("about", ABOUT_PATTERNS), ("products", PRODUCT_PATTERNS))
-
-    for link in links:
+    # canonical_url -> (score, role, first_seen_index); keep the best per URL.
+    best: dict[str, tuple[int, str, int]] = {}
+    for idx, link in enumerate(links):
         href = link.get("href", "")
         text = link.get("text", "")
         parsed = urlparse(href)
@@ -183,24 +195,22 @@ def select_pages(home_url: str, links: list[dict]) -> dict[str, str | None]:
         canon = _canonical(href)
         if canon == home_canon:
             continue
-        for role, patterns in groups:
-            s = _score(parsed.path, text, patterns)
-            if s <= 0:
-                continue
-            if s > candidates[role].get(canon, 0):
-                candidates[role][canon] = s
+        score, role = _classify(parsed.path, text)
+        if score < MIN_SELECT_SCORE or role is None:
+            continue
+        prev = best.get(canon)
+        if prev is None:
+            best[canon] = (score, role, idx)
+        elif score > prev[0]:
+            best[canon] = (score, role, prev[2])  # keep first-seen position
 
-    about_score, about_url = _choose(list(candidates["about"].items()))
-    product_score, product_url = _choose(list(candidates["products"].items()))
+    def _rank(item):
+        url, (score, role, idx) = item
+        path = urlparse(url).path.rstrip("/")
+        return (-score, _path_depth(url), ROLE_PRIORITY.get(role, 99), len(path), idx)
 
-    # If both groups picked the same URL, keep it for the higher-scoring role.
-    if about_url and about_url == product_url:
-        if about_score >= product_score:
-            product_url = None
-        else:
-            about_url = None
-
-    return {"about": about_url, "products": product_url}
+    ranked = sorted(best.items(), key=_rank)
+    return [(role, url) for url, (_score, role, _idx) in ranked[:MAX_SUBPAGES]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -287,10 +297,11 @@ async def _render_extract_subpage(context, policy, role: str, url: str) -> dict 
 
 
 async def crawl(start_url: str) -> dict:
-    """Crawl homepage + best about + best products page (<= MAX_PAGES) and merge.
+    """Crawl the homepage + top MAX_SUBPAGES best-matching pages, then merge.
 
-    Subpages render concurrently in one Chromium context. Each request is
-    robots-checked and per-host paced first (MODE=polite).
+    The homepage is always read first; the subpages are then rendered
+    concurrently in one Chromium context. Each request is robots-checked and
+    per-host paced first (MODE=polite).
 
     Raises `RenderError` if the homepage can't be read or is disallowed by robots.
     """
@@ -313,14 +324,10 @@ async def crawl(start_url: str) -> dict:
             await home_page.close()
         pages = [{"role": "home", "url": home_url, **home_result}]
 
-        # Discover the about/products pages, then render them concurrently
-        # (best-effort), each robots-gated and per-host paced.
-        selected = select_pages(home_url, links)
-        subpages = [
-            (role, selected[role])
-            for role in ("about", "products")
-            if selected.get(role)
-        ]
+        # Discover the best-matching subpages, then render them concurrently
+        # (best-effort), each robots-gated and per-host paced. select_pages
+        # already caps the list at MAX_SUBPAGES.
+        subpages = select_pages(home_url, links)
         results = await asyncio.gather(
             *(_render_extract_subpage(context, policy, role, url)
               for role, url in subpages)

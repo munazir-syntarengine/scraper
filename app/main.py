@@ -64,7 +64,7 @@ class Fonts(BaseModel):
 
 
 class PageRef(BaseModel):
-    role: str  # "home" | "about" | "products"
+    role: str  # "home" + best-matching roles: "about" | "products" | "contact" | "news"
     url: str
 
 
@@ -96,7 +96,7 @@ def health() -> dict:
     responses={502: {"model": ErrorResponse}},
 )
 async def analyze(req: AnalyzeRequest):
-    """Crawl the homepage + best about + best products page, return the contract.
+    """Crawl the homepage + its top 4 best-matching pages, return the contract.
 
     Best-effort: sub-pages and sub-extractions that fail are skipped rather than
     failing the request. Only an unreadable homepage (blocked, timed out, empty)
