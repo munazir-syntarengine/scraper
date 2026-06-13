@@ -62,6 +62,24 @@ def pick_viewport() -> dict:
     w, h = VIEWPORT_FIXED or random.choice(VIEWPORT_POOL)
     return {"width": w, "height": h}
 
+# ── Overlay handling: cookie consent + age verification ───────────────────────
+# Brand sites — especially alcohol brands — gate their content behind a cookie
+# banner and/or an age-verification dialog. Both hide the real page from the
+# extractor, so before reading a page we accept all cookies and assert a
+# legal-drinking-age date of birth. Best-effort and ON by default; set
+# HANDLE_OVERLAYS=0 to disable.
+HANDLE_OVERLAYS = os.getenv("HANDLE_OVERLAYS", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+
+# Date of birth submitted to age gates — a fixed adult DOB comfortably over any
+# legal drinking age (21+). 1990 → ~30s-40s, valid for both 18+ and 21+ gates.
+AGE_GATE_DOB = {
+    "year": os.getenv("AGE_GATE_YEAR", "1990"),
+    "month": os.getenv("AGE_GATE_MONTH", "06"),
+    "day": os.getenv("AGE_GATE_DAY", "15"),
+}
+
 # ── Stealth mode: gated (ticket 10) ───────────────────────────────────────────
 # Stealth mode is bot-detection evasion (fingerprint randomization,
 # robots.txt bypass, CAPTCHA/Cloudflare circumvention). It is deliberately NOT

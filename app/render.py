@@ -27,6 +27,9 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from app import config
+from app.interact import handle_overlays
+
 # Navigation (DOMContentLoaded) timeout.
 NAV_TIMEOUT_MS = 30_000
 # Best-effort wait for the network to go quiet after DOMContentLoaded.
@@ -138,6 +141,19 @@ async def render_in(
             raise RenderError(
                 f"the site returned HTTP {response.status}", status=response.status
             )
+
+        # 3.5) Accept cookies + pass any age gate. Best-effort: a no-op on pages
+        #      without gates. Only re-wait for the network when we actually acted
+        #      (the revealed content needs to settle) — otherwise skip the wait.
+        if config.HANDLE_OVERLAYS:
+            report = await handle_overlays(page)
+            if report.get("cookies") or report.get("age_gate"):
+                try:
+                    await page.wait_for_load_state(
+                        "networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
+                    )
+                except PlaywrightTimeoutError:
+                    pass
 
         # 4) Nothing readable rendered → treat as unreadable.
         body_text = (await page.evaluate(

@@ -206,6 +206,13 @@ _STRIP_TAGS = ("script", "style", "noscript", "svg", "form", "iframe")
 _BOILER_TAGS = ("nav", "footer", "aside")
 # Substrings in class/id that mark boilerplate (spec §4).
 _BOILER_SUBSTR = ("cookie", "banner", "footer", "nav", "popup", "newsletter")
+# Consent-platform (CMP) container markers. Their preference panels are hidden
+# via CSS, but BeautifulSoup can't see `display:none`, so their "Manage Consent
+# Preferences" markup would otherwise leak into the text once we accept cookies.
+# These vendor strings never appear in real brand content, so — unlike the
+# generic tokens above — they're stripped regardless of how much text they hold
+# (a CMP panel can out-text a sparse visual homepage and slip past the guard).
+_CMP_SUBSTR = ("onetrust", "optanon", "ot-sdk", "cookiebot", "usercentrics")
 # A class/id-flagged element is only stripped if it holds at most this share of
 # the page's text blocks. Above it, the "boilerplate" token is almost certainly
 # a theme marker on a big wrapper (e.g. WordPress puts `ehf-footer
@@ -249,6 +256,16 @@ def clean_text(html: str) -> str:
     # Drop non-content tags and semantic boilerplate containers outright.
     for tag in soup(list(_STRIP_TAGS) + list(_BOILER_TAGS)):
         tag.decompose()
+
+    # Drop consent-platform (CMP) containers outright — always boilerplate,
+    # stripped regardless of size (their hidden panels can hold more text than a
+    # sparse homepage). Skip the structural root so we never wipe the page.
+    for el in soup.find_all(True):
+        if getattr(el, "decomposed", False) or el.name in ("html", "body"):
+            continue
+        class_id = (" ".join(el.get("class") or []) + " " + (el.get("id") or "")).lower()
+        if class_id.strip() and any(tok in class_id for tok in _CMP_SUBSTR):
+            el.decompose()
 
     # Drop boilerplate by class/id (nav, cookie banner, footer, newsletter, ads).
     # Two guards stop a theme's boilerplate-ish token on a big container from

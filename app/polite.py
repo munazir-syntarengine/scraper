@@ -11,10 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import time
+import urllib.error
+import urllib.request
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
 from app import config
+
+# Timeout for the robots.txt fetch (off-thread).
+_ROBOTS_TIMEOUT = 10
 
 
 class Politeness:
@@ -46,16 +51,48 @@ class Politeness:
     def _host(url: str) -> str:
         return urlsplit(url).netloc
 
+    def _fetch_robots(self, host: str) -> tuple[int | None, str]:
+        """Fetch robots.txt with OUR honest UA. Returns (status, body).
+
+        Status is None on a network/transport error. Fetching with our declared
+        UA (not urllib's default `Python-urllib/x`) is both more polite and more
+        accurate — many CDNs 403 the default UA, which urllib would then misread
+        as a blanket disallow.
+        """
+        req = urllib.request.Request(
+            f"https://{host}/robots.txt", headers={"User-Agent": self.user_agent}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=_ROBOTS_TIMEOUT) as resp:
+                return resp.status, resp.read(1_000_000).decode("utf-8", "replace")
+        except urllib.error.HTTPError as err:
+            return err.code, ""
+        except Exception:
+            return None, ""
+
     async def _get_robots(self, host: str) -> RobotFileParser | None:
-        """Fetch + cache robots.txt for a host (off-thread; never blocks the loop)."""
+        """Fetch + cache robots.txt for a host (off-thread; never blocks the loop).
+
+        Status handling follows RFC 9309 §2.3.1: a 4xx (absent/forbidden
+        robots.txt, including 404/403) means "no restrictions" → allow all; a
+        5xx (server error/unreachable) means "assume complete disallow"; a 2xx
+        is parsed for real rules. A transport error → None (allowed, stay gentle).
+        """
         if host in self._robots:
             return self._robots[host]
+
+        status, body = await asyncio.to_thread(self._fetch_robots, host)
         rp: RobotFileParser | None = RobotFileParser()
         rp.set_url(f"https://{host}/robots.txt")
-        try:
-            await asyncio.to_thread(rp.read)
-        except Exception:
-            rp = None  # robots unreachable → treat as allowed, but stay gentle
+        if status is None:
+            rp = None                                   # transport error → allowed
+        elif 400 <= status < 500:
+            rp.allow_all = True                         # RFC 9309: 4xx → allow all
+        elif status >= 500:
+            rp.disallow_all = True                      # RFC 9309: 5xx → disallow all
+        else:
+            rp.parse(body.splitlines())                 # 2xx/3xx → real rules
+
         self._robots[host] = rp
         return rp
 
