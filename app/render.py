@@ -90,8 +90,14 @@ async def browser_session(
             await browser.close()
 
 
-async def render_in(context: BrowserContext, url: str) -> Page:
+async def render_in(
+    context: BrowserContext, url: str, viewport: Optional[dict] = None
+) -> Page:
     """Open a new page in `context`, load `url`, and return it live.
+
+    `viewport` ({'width','height'}) overrides this page's size — the crawl rolls
+    a fresh one per page so each renders at a different real desktop size. When
+    omitted, the page inherits the context's default viewport (context_args).
 
     Raises `RenderError` on a load failure, a hard HTTP error, or an empty body
     (the new page is closed before raising). On success the caller owns the
@@ -100,6 +106,12 @@ async def render_in(context: BrowserContext, url: str) -> Page:
     target = _normalize_url(url)
     page = await context.new_page()
     try:
+        # 0) Per-page viewport override. Set BEFORE navigation so the page loads
+        #    — and computes its styles (the colors/fonts we extract) — at this
+        #    size, not at the context default it would briefly start with.
+        if viewport:
+            await page.set_viewport_size(viewport)
+
         # 1) Load the document. A timeout or connection failure here is a
         #    genuine "couldn't read it" → RenderError.
         try:

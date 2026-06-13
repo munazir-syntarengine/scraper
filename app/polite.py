@@ -14,6 +14,8 @@ import time
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
+from app import config
+
 
 class Politeness:
     """Robots cache + per-host rate limit + concurrency cap + honest UA."""
@@ -27,8 +29,18 @@ class Politeness:
         self._robots: dict[str, RobotFileParser | None] = {}  # host -> parsed robots
 
     # The browser context advertises this UA — no masking, no random browser UA.
+    # The context viewport (config.pick_viewport) is the crawl's default size;
+    # individual pages re-roll their own via next_viewport() below, so the pages
+    # of one crawl render at varying real desktop sizes. Not evasion — just a
+    # representative layout.
     def context_args(self) -> dict:
-        return {"user_agent": self.user_agent}
+        return {"user_agent": self.user_agent, "viewport": config.pick_viewport()}
+
+    # A fresh viewport for a single page. Re-rolled per page (render.py applies
+    # it with page.set_viewport_size before navigating) so the homepage and each
+    # subpage of one crawl can render at different real desktop sizes.
+    def next_viewport(self) -> dict:
+        return config.pick_viewport()
 
     @staticmethod
     def _host(url: str) -> str:

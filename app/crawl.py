@@ -276,7 +276,7 @@ async def _render_extract_subpage(context, policy, role: str, url: str) -> dict 
         if not await policy.allowed(url):   # robots → skip this page
             return None
         await policy.wait_turn(url)         # per-host pacing
-        page = await render_in(context, url)
+        page = await render_in(context, url, viewport=policy.next_viewport())
         try:
             result = await extract_all(page)
             return {"role": role, "url": page.url, **result}
@@ -301,7 +301,7 @@ async def crawl(start_url: str) -> dict:
         if not await policy.allowed(start_url):
             raise RenderError("the homepage is disallowed by robots.txt")
         await policy.wait_turn(start_url)
-        home_page = await render_in(context, start_url)
+        home_page = await render_in(context, start_url, viewport=policy.next_viewport())
         try:
             home_url = home_page.url
             home_result = await extract_all(home_page)
